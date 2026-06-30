@@ -1,5 +1,12 @@
-import java.io.*;
-import java.net.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class Server{
     private static final String ERROR_COLOR_CODE = "\u001B[31m";
@@ -18,22 +25,38 @@ public class Server{
         if(helpRequested) return;
 
         logWithLevel("INFO", "Server started");
-        try(ServerSocket server = new ServerSocket(listenPort)){
-            Socket client = server.accept();
-        
-            BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream(), "UTF-8"));
-            PrintWriter out = new PrintWriter(client.getOutputStream(), true);
 
-            String line = in.readLine();
-            logWithLevel("INFO", "Client: "+client.getInetAddress().getHostAddress()+":"+client.getPort()+" said: "+line);
-            out.println("Hello client, I heard: "+line);
-            client.close();
-            server.close();
+        ExecutorService pool = Executors.newCachedThreadPool();
+
+        try(ServerSocket server = new ServerSocket(listenPort)){
+            while (true){
+                Socket client = server.accept();
+                pool.submit(() -> handleClient(client));
+            }
         }
         catch(IOException e){
-            e.printStackTrace();
+            logWithLevel("ERROR", "Server error: "+e.getMessage());
         }
-        logWithLevel("INFO", "Server Closed");
+        finally{
+            pool.shutdownNow();
+            logWithLevel("INFO", "Server closed");
+        }
+    }
+
+    private static void handleClient(Socket client){
+        try(Socket c = client;
+            BufferedReader in = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
+            PrintWriter out = new PrintWriter(c.getOutputStream(), true)){
+            
+            String line = in.readLine();
+            if(line==null)
+                return;
+            logWithLevel("INFO", "Client: "+c.getInetAddress().getHostAddress()+":"+c.getPort()+" said: "+line);
+            out.println("Hello client, I heard: "+line);
+        }
+        catch(IOException e){
+            logWithLevel("ERROR", "Client handler error: "+e.getMessage());
+        }
     }
 
     private static void argumentParser(String[] args) {
@@ -69,22 +92,24 @@ public class Server{
 
 
     private static void logWithLevel(String severity, String msg){
-        if("INFO".equals(severity)){
-            log.info(msg);
-            if(enableConsoleLog)
-                System.out.println(Color.wrap("INFO: ",INFO_COLOR_CODE, enableAnsiColor)+msg);
+        switch(severity){
+            case "INFO":
+                log.info(msg);
+                if(enableConsoleLog)
+                    System.out.println(Color.wrap("INFO: ",INFO_COLOR_CODE, enableAnsiColor)+msg);
+                return;
+            case "WARNING":
+                log.warning(msg);
+                if(enableConsoleLog)
+                    System.out.println(Color.wrap("WARNING: ",WARNING_COLOR_CODE, enableAnsiColor)+msg);
+                return;
+            case "ERROR":
+                log.error(msg);
+                if(enableConsoleLog)
+                    System.out.println(Color.wrap("ERROR: ",ERROR_COLOR_CODE, enableAnsiColor)+msg);
+                return;
+            default:
+                throw new IllegalArgumentException("Unknown log level: " + severity);
         }
-        else if("WARNING".equals(severity)){
-            log.warning(msg);
-            if(enableConsoleLog)
-                System.out.println(Color.wrap("WARNING: ",WARNING_COLOR_CODE, enableAnsiColor)+msg);
-        }
-        else if("ERROR".equals(severity)){
-            log.error(msg);
-            if(enableConsoleLog)
-                System.out.println(Color.wrap("ERROR: ",ERROR_COLOR_CODE, enableAnsiColor)+msg);
-        }
-        else
-            throw new IllegalArgumentException("Unknown log level: " + severity);
     }
 }
