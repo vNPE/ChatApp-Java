@@ -1,7 +1,5 @@
 import java.io.*;
 import java.net.*;
-import java.awt.*;
-import java.awt.event.*;
 
 public class Server{
     private static final String ERROR_COLOR_CODE = "\u001B[31m";
@@ -10,21 +8,16 @@ public class Server{
 
     private static final int listenPort = 3000;
     private static final Logger log = new Logger();
+
     private static boolean enableConsoleLog=false;
     private static boolean enableAnsiColor=false;
+    private static boolean helpRequested = false;
 
     public static void main(String[] args){
-        if(args.length>0){
-            for(int i=0;i<args.length;i++)
-                if(args[i].equals("-v"))
-                    enableConsoleLog=true;
-                else if(args[i].equals("--color"))
-                    enableAnsiColor=true;
-                else
-                    System.out.println("Unknow argument: "+args[i]);
-        }
+        argumentParser(args);
+        if(helpRequested) return;
 
-        log.info("Server started");
+        logWithLevel("INFO", "Server started");
         try(ServerSocket server = new ServerSocket(listenPort)){
             Socket client = server.accept();
         
@@ -32,7 +25,7 @@ public class Server{
             PrintWriter out = new PrintWriter(client.getOutputStream(), true);
 
             String line = in.readLine();
-            log("INFO", "Client: "+client.getInetAddress().getHostAddress()+":"+client.getPort()+" said: "+line);
+            logWithLevel("INFO", "Client: "+client.getInetAddress().getHostAddress()+":"+client.getPort()+" said: "+line);
             out.println("Hello client, I heard: "+line);
             client.close();
             server.close();
@@ -40,10 +33,42 @@ public class Server{
         catch(IOException e){
             e.printStackTrace();
         }
-        log.info("Server Closed");
+        logWithLevel("INFO", "Server Closed");
     }
 
-    public static void log(String severity, String msg){
+    private static void argumentParser(String[] args) {
+        for (String arg : args) {
+            switch (arg) {
+                case "-v":
+                case "--verbose":
+                    enableConsoleLog = true;
+                    break;
+                case "-c":
+                case "--color":
+                    enableAnsiColor = true;
+                    break;
+                case "-h":
+                case "--help":
+                    helpRequested = true;
+                    printHelp();
+                    return;
+                default:
+                    throw new IllegalArgumentException("Unknown argument. Do -h for a list of valid arguments");
+            }
+        }
+    }
+    
+    private static void printHelp() {
+    System.out.println(
+        "Available flags:\n"
+            + "  -v, --verbose   Prints everything that gets added to the log to the console.\n"
+            + "  -c, --color     Uses ANSI colors for console log output.\n"
+            + "  -h, --help      Prints this help message."
+        );
+    }
+
+
+    private static void logWithLevel(String severity, String msg){
         if("INFO".equals(severity)){
             log.info(msg);
             if(enableConsoleLog)
