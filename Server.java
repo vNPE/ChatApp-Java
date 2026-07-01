@@ -9,6 +9,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class Server{
+
+    enum LogLevel { INFO, WARNING, ERROR }
+
     private static final String ERROR_COLOR_CODE = "\u001B[31m";
     private static final String WARNING_COLOR_CODE = "\u001B[33m";
     private static final String INFO_COLOR_CODE = "\u001B[34m";
@@ -24,7 +27,7 @@ public class Server{
         argumentParser(args);
         if(helpRequested) return;
 
-        logWithLevel("INFO", "Server started");
+        logWithLevel(LogLevel.INFO, "Server started");
 
         ExecutorService pool = Executors.newCachedThreadPool();
 
@@ -35,11 +38,11 @@ public class Server{
             }
         }
         catch(IOException e){
-            logWithLevel("ERROR", "Server error: "+e.getMessage());
+            logWithLevel(LogLevel.ERROR, "Server error: "+e.getMessage());
         }
         finally{
             pool.shutdownNow();
-            logWithLevel("INFO", "Server closed");
+            logWithLevel(LogLevel.INFO, "Server closed");
         }
     }
 
@@ -51,11 +54,11 @@ public class Server{
             String line = in.readLine();
             if(line==null)
                 return;
-            logWithLevel("INFO", "Client: "+c.getInetAddress().getHostAddress()+":"+c.getPort()+" said: "+line);
+            logWithLevel(LogLevel.INFO, "Client: "+c.getInetAddress().getHostAddress()+":"+c.getPort()+" said: "+line);
             out.println("Hello client, I heard: "+line);
         }
         catch(IOException e){
-            logWithLevel("ERROR", "Client handler error: "+e.getMessage());
+            logWithLevel(LogLevel.ERROR, "Client handler error: "+e.getMessage());
         }
     }
 
@@ -91,25 +94,26 @@ public class Server{
     }
 
 
-    private static void logWithLevel(String severity, String msg){
+    private static void logWithLevel(LogLevel severity, String msg){
         switch(severity){
-            case "INFO":
-                log.info(msg);
-                if(enableConsoleLog)
-                    System.out.println(Color.wrap("INFO: ",INFO_COLOR_CODE, enableAnsiColor)+msg);
-                return;
-            case "WARNING":
-                log.warning(msg);
-                if(enableConsoleLog)
-                    System.out.println(Color.wrap("WARNING: ",WARNING_COLOR_CODE, enableAnsiColor)+msg);
-                return;
-            case "ERROR":
-                log.error(msg);
-                if(enableConsoleLog)
-                    System.out.println(Color.wrap("ERROR: ",ERROR_COLOR_CODE, enableAnsiColor)+msg);
-                return;
-            default:
-                throw new IllegalArgumentException("Unknown log level: " + severity);
+            case INFO -> log.info(msg);
+            case WARNING -> log.warning(msg);
+            case ERROR -> log.error(msg);
         }
+        if(!enableConsoleLog) return;
+
+        String label = switch (severity) {
+            case INFO -> "INFO: ";
+            case WARNING -> "WARNING: ";
+            case ERROR -> "ERROR: ";
+        };
+
+        String code = switch (severity) {
+            case INFO -> INFO_COLOR_CODE;
+            case WARNING -> WARNING_COLOR_CODE;
+            case ERROR -> ERROR_COLOR_CODE;
+        };
+
+        System.out.println(Color.wrap(label, code, enableAnsiColor)+msg);
     }
 }
