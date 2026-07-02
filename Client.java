@@ -12,11 +12,10 @@ public class Client {
              PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
              BufferedReader userIn = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
 
-            System.out.println("Enter your first message:");
-            String firstMsg = userIn.readLine();
-            if (firstMsg == null) return;
-
-            out.println(firstMsg);
+            System.out.println("Enter your name:");
+            String name = userIn.readLine();
+            if (name == null) return;
+            out.println(name);
 
             Thread receiver = new Thread(() -> {
                 try {
@@ -24,8 +23,7 @@ public class Client {
                     while ((line = serverIn.readLine()) != null) {
                         System.out.println(line);
                     }
-                } catch (IOException ignored) {
-                }
+                } catch (IOException ignored) { }
                 System.out.println("Disconnected from server.");
             });
             receiver.setDaemon(true);

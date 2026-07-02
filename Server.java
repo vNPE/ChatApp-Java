@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.nio.file.Path;
 
 public class Server {
     enum LogLevel { INFO, WARNING, ERROR }
@@ -21,6 +22,16 @@ public class Server {
     private static boolean shouldExitAfterHelp = false;
 
     private static final List<ClientConnection> connections = new CopyOnWriteArrayList<>();
+
+    private static final Moderation moderation;
+        static {
+            try {
+                moderation = new Moderation(Path.of("banned-names.txt"));
+            } catch (IOException e) {
+            throw new RuntimeException("Failed to load banned names file", e);
+        }
+    }
+
 
     public static void main(String[] args) {
         argumentParser(args);
@@ -44,36 +55,45 @@ public class Server {
 
     private static void handleClient(Socket client) {
         ClientConnection connection = null;
+        String addr = client.getInetAddress().getHostAddress() + ":" + client.getPort();
 
         try (Socket c = client;
-            BufferedReader in = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
-            PrintWriter out = new PrintWriter(c.getOutputStream(), true)) {
+             BufferedReader in = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
+             PrintWriter out = new PrintWriter(c.getOutputStream(), true)) {
 
-            String line = in.readLine();
-            if (line == null) return;
+            String name = in.readLine();
+            if (name == null) return;
 
-            String addr = c.getInetAddress().getHostAddress() + ":" + c.getPort();
-            logWithLevel(LogLevel.INFO, "Client: " + addr + " said: " + line);
+            name = name.trim();
+            if (name.isEmpty()) name = "Anonymous";
 
-            connection = new ClientConnection(out);
+            if (moderation.isBannedName(name)) {
+                out.println("Name not allowed.");
+                return;
+            }
+
+            logWithLevel(LogLevel.INFO, "Client: " + addr + " connected as: " + name);
+
+            connection = new ClientConnection(out, name);
             connections.add(connection);
 
-            out.println("Hello client, I heard: " + line);
+            out.println("Hello " + name + ", welcome to the server.");
+            broadcastExcept(connection, name + " has joined");
 
             String msg;
             while ((msg = in.readLine()) != null) {
                 if (msg.equalsIgnoreCase("/exit")) break;
 
-                logWithLevel(LogLevel.INFO, "Client: " + addr + " said: " + msg);
-                broadcastExcept(connection, addr + " -> " + msg);
+                logWithLevel(LogLevel.INFO, "Client: " + addr + " (" + name + ") said: " + msg);
+                broadcastExcept(connection, name + ": " + msg);
             }
-
         } catch (IOException e) {
             logWithLevel(LogLevel.ERROR, "Client handler error: " + e.getMessage());
         } finally {
             if (connection != null) {
                 connections.remove(connection);
-                logWithLevel(LogLevel.INFO, "Client disconnected");
+                broadcastExcept(connection, connection.name + " has left");
+                logWithLevel(LogLevel.INFO, "Client disconnected: " + connection.name);
             }
         }
     }
@@ -87,9 +107,11 @@ public class Server {
 
     private static class ClientConnection {
         private final PrintWriter out;
+        private final String name;
 
-        ClientConnection(PrintWriter out) {
+        ClientConnection(PrintWriter out, String name) {
             this.out = out;
+            this.name = name;
         }
 
         void send(String msg) {
@@ -108,12 +130,11 @@ public class Server {
                     return;
                 }
                 default -> throw new IllegalArgumentException(
-                    "Unknown argument. Do -h for a list of valid arguments"
+                        "Unknown argument. Do -h for a list of valid arguments"
                 );
             }
         }
     }
-
 
     private static void printHelp() {
         System.out.println(
@@ -125,25 +146,19 @@ public class Server {
     }
 
     private static void logWithLevel(LogLevel severity, String msg) {
+        if (consoleLogEnabled) {
+            String label = severity + ": ";
+            String code = switch (severity) {
+                case INFO -> Color.blue();
+                case WARNING -> Color.yellow();
+                case ERROR -> Color.red();
+            };
+            System.out.println(Color.wrap(label, code, ansiColorEnabled) + msg);
+        }
         switch (severity) {
             case INFO -> log.info(msg);
             case WARNING -> log.warning(msg);
             case ERROR -> log.error(msg);
         }
-        if (!consoleLogEnabled) return;
-
-        String label = switch (severity) {
-            case INFO -> "INFO: ";
-            case WARNING -> "WARNING: ";
-            case ERROR -> "ERROR: ";
-        };
-
-        String code = switch (severity) {
-            case INFO -> Color.blue();
-            case WARNING -> Color.yellow();
-            case ERROR -> Color.red();
-        };
-
-        System.out.println(Color.wrap(label, code, ansiColorEnabled) + msg);
     }
 }
