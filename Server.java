@@ -7,21 +7,23 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 
 public class Server {
     private static final int PORT = 3000;
     private static final Logger log = new Logger();
-    private static boolean shouldExitAfterHelp = false;
 
     private static final List<ClientConnection> connections = new CopyOnWriteArrayList<>();
+    private static final ConcurrentHashMap<String, ClientConnection> connectionsByName =
+            new ConcurrentHashMap<>();
 
-        private static final Moderation moderation;
-        static {
-            try {
-                moderation = new Moderation(Path.of("banned-names.txt"));
-            } catch (IOException e) {
+    private static final Moderation moderation;
+    static {
+        try {
+            moderation = new Moderation(Path.of("banned-names.txt"));
+        } catch (IOException e) {
             throw new RuntimeException("Failed to load banned names file", e);
         }
     }
@@ -70,10 +72,16 @@ public class Server {
                 return;
             }
 
-            log.info("Client: " + addr + " connected as: " + name);
+            ClientConnection existing = connectionsByName.putIfAbsent(name, new ClientConnection(out, name));
+            if (existing != null) {
+                out.println("Name '" + name + "' already in use.");
+                return;
+            }
 
-            connection = new ClientConnection(out, name);
+            connection = connectionsByName.get(name);
             connections.add(connection);
+
+            log.info("Client: " + addr + " connected as: " + name);
 
             out.println("Hello " + name + ", welcome to the server.");
             broadcastExcept(connection, name + " has joined");
@@ -85,11 +93,14 @@ public class Server {
                 log.info("Client: " + addr + " (" + name + ") said: " + msg);
                 broadcastExcept(connection, name + ": " + msg);
             }
+
         } catch (IOException e) {
             log.error("Client handler error: " + e.getMessage());
         } finally {
             if (connection != null) {
                 connections.remove(connection);
+                connectionsByName.remove(connection.name, connection);
+
                 broadcastExcept(connection, connection.name + " has left");
                 log.info("Client disconnected: " + connection.name);
             }

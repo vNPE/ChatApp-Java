@@ -2,31 +2,28 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class Logger {
     public enum LogLevel { INFO, WARNING, ERROR }
 
+    private static final Path FILE = Path.of("server-log.txt");
     private final DateTimeFormatter fmt = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSS Z");
-    private final java.nio.file.Path file = java.nio.file.Paths.get("server-log.txt");
 
-    private boolean consoleEnabled = false;
-    private boolean ansiColorEnabled = false;
+    private volatile boolean consoleEnabled = false;
+    private volatile boolean ansiColorEnabled = false;
 
-    private final java.util.concurrent.atomic.AtomicReference<java.time.Instant> lastInstant =
-            new java.util.concurrent.atomic.AtomicReference<>(null);
+    private volatile Long lastInstantMillis = null;
 
     public Logger() {
         try {
-            if (file.getParent() != null) java.nio.file.Files.createDirectories(file.getParent());
-        } catch (java.io.IOException e) {
+            if (FILE.getParent() != null) Files.createDirectories(FILE.getParent());
+        } catch (IOException e) {
             throw new RuntimeException("Failed to initialize log file", e);
         }
     }
@@ -36,19 +33,23 @@ public class Logger {
         this.ansiColorEnabled = ansi;
     }
 
-    private synchronized void log(LogLevel level, String message) {
+    private void log(LogLevel level, String message) {
         Instant now = Instant.now();
-        Instant prev = lastInstant.getAndSet(now);
-        long elapsedMillis = prev == null ? 0L : Duration.between(prev, now).toMillis();
+        Long prev = lastInstantMillis;
+        lastInstantMillis = now.toEpochMilli();
+
+        long elapsedMillis = (prev == null) ? 0L : Duration.between(Instant.ofEpochMilli(prev), now).toMillis();
 
         String timestamp = ZonedDateTime.ofInstant(now, ZoneId.systemDefault()).format(fmt);
         String line = String.format("%s [%s] (+%dms) %s%n", timestamp, level, elapsedMillis, message);
 
-        try (BufferedWriter writer = Files.newBufferedWriter(file,
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.APPEND)) {
+        try (BufferedWriter writer = Files.newBufferedWriter(
+                FILE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND
+        )) {
             writer.write(line);
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             e.printStackTrace();
         }
 
