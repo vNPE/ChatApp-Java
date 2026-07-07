@@ -10,13 +10,17 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
 public class ClientFx extends Application {
-    private static final int destPort = 3000;
-    private static final String destIp = "localhost";
+    // Defaults (user can override)
+    private static final String defaultIp = "localhost";
+    private static final int defaultPort = 3000;
 
     private TextArea chatArea;
     private TextField input;
     private TextField nameField;
     private Button sendBtn;
+
+    private TextField ipField;
+    private TextField portField;
 
     private Socket socket;
     private BufferedReader serverIn;
@@ -30,6 +34,12 @@ public class ClientFx extends Application {
         nameField = new TextField();
         nameField.setPromptText("Your name");
 
+        ipField = new TextField(defaultIp);
+        ipField.setPromptText("Server IP");
+
+        portField = new TextField(String.valueOf(defaultPort));
+        portField.setPromptText("Server port");
+
         input = new TextField();
         input.setPromptText("Message");
 
@@ -42,7 +52,16 @@ public class ClientFx extends Application {
         sendBtn.setOnAction(e -> send());
         input.setOnAction(e -> send());
 
-        VBox root = new VBox(8, new Label("Name:"), nameField, connectBtn, chatArea, input, sendBtn);
+        VBox root = new VBox(
+                8,
+                new Label("Name:"), nameField,
+                new Label("Server IP:"), ipField,
+                new Label("Server port:"), portField,
+                connectBtn,
+                chatArea,
+                input,
+                sendBtn
+        );
 
         stage.setTitle("Chat Client");
         stage.setScene(new Scene(root, 520, 420));
@@ -56,9 +75,24 @@ public class ClientFx extends Application {
             return;
         }
 
+        String ip = ipField.getText();
+        if (ip == null || ip.isBlank()) {
+            alert("Enter a server IP.");
+            return;
+        }
+
+        int port;
+        try {
+            port = Integer.parseInt(portField.getText().trim());
+            if (port < 1 || port > 65535) throw new NumberFormatException();
+        } catch (Exception ex) {
+            alert("Enter a valid port (1-65535).");
+            return;
+        }
+
         new Thread(() -> {
             try {
-                socket = new Socket(destIp, destPort);
+                socket = new Socket(ip, port);
                 serverIn = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                 out = new PrintWriter(socket.getOutputStream(), true);
 
@@ -67,7 +101,7 @@ public class ClientFx extends Application {
                 Platform.runLater(() -> {
                     sendBtn.setDisable(false);
                     input.requestFocus();
-                    chatArea.appendText("Connected.\n");
+                    chatArea.appendText("Connected to " + ip + ":" + port + "\n");
                 });
 
                 String line;
@@ -100,10 +134,10 @@ public class ClientFx extends Application {
 
     private void close() {
         new Thread(() -> {
-            try { if (socket != null) socket.close(); } catch (IOException ignored) {}
-            Platform.runLater(() -> {
-                sendBtn.setDisable(true);
-            });
+            try {
+                if (socket != null) socket.close();
+            } catch (IOException ignored) {}
+            Platform.runLater(() -> sendBtn.setDisable(true));
         }).start();
     }
 
