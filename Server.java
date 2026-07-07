@@ -6,6 +6,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -13,7 +14,11 @@ import java.util.concurrent.ExecutorService;
 
 public class Server {
     private static final int PORT = 3000;
+    private static final int HISTORY_LIMIT = 200;
+
     private static final Logger log = new Logger();
+
+    private static final Db db = new Db();
 
     private static final List<ClientConnection> connections = new CopyOnWriteArrayList<>();
     private static final ConcurrentHashMap<String, ClientConnection> connectionsByName =
@@ -84,13 +89,56 @@ public class Server {
             log.info("Client: " + addr + " connected as: " + name);
 
             out.println("Hello " + name + ", welcome to the server.");
+
+            // Send last 200 messages by default
+            out.println("---- History ----");
+            try {
+                List<Db.Msg> history = db.lastMessages(HISTORY_LIMIT); // newest->oldest unless you sort
+                for (Db.Msg m : history) {
+                    out.println(m.sender() + ": " + m.body());
+                }
+            } catch (SQLException e) {
+                out.println("Failed to load history.");
+                log.error("History load error (" + name + "): " + e.getMessage());
+            }
+            out.println("---- End history ----");
+
             broadcastExcept(connection, name + " has joined");
 
             String msg;
             while ((msg = in.readLine()) != null) {
                 if (msg.equalsIgnoreCase("/exit")) break;
 
+                if (msg.equalsIgnoreCase("/users")) {
+                    out.println("Users: " + String.join(", ", connectionsByName.keySet()));
+                    continue;
+                }
+
+                if (msg.equalsIgnoreCase("/history")) {
+                    out.println("---- History ----");
+                    try {
+                        List<Db.Msg> history = db.lastMessages(HISTORY_LIMIT);
+                        for (Db.Msg m : history) {
+                            out.println(m.sender() + ": " + m.body());
+                        }
+                    } catch (SQLException e) {
+                        out.println("Failed to load history.");
+                        log.error("History load error (" + name + "): " + e.getMessage());
+                    }
+                    out.println("---- End history ----");
+                    continue;
+                }
+
                 log.info("Client: " + addr + " (" + name + ") said: " + msg);
+
+                try {
+                    db.insertMessage(name, msg);
+                } catch (SQLException e) {
+                    out.println("Failed to save message.");
+                    log.error("DB insert error (" + name + "): " + e.getMessage());
+                    continue;
+                }
+
                 broadcastExcept(connection, name + ": " + msg);
             }
 
