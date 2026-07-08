@@ -5,62 +5,71 @@ import javafx.scene.control.*;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
 public class ClientFx extends Application {
-    // Defaults (user can override)
-    private static final String defaultIp = "localhost";
-    private static final int defaultPort = 3000;
+    private static final String DEFAULT_IP = "localhost";
+    private static final int DEFAULT_PORT = 3000;
 
+    // =======================
+    // UI fields
+    // =======================
     private TextArea chatArea;
-    private TextField input;
-    private TextField nameField;
-    private Button sendBtn;
+    private TextField usernameField;
+    private TextField serverIpField;
+    private TextField serverPortField;
+    private TextField messageField;
+    private Button sendButton;
 
-    private TextField ipField;
-    private TextField portField;
-
+    // =======================
+    // Networking fields
+    // =======================
     private Socket socket;
-    private BufferedReader serverIn;
-    private PrintWriter out;
+    private BufferedReader serverReader;
+    private PrintWriter serverWriter;
 
     @Override
-    public void start(Stage stage) {
+    public void start(final Stage stage) {
+        // =======================
+        // Build UI
+        // =======================
         chatArea = new TextArea();
         chatArea.setEditable(false);
 
-        nameField = new TextField();
-        nameField.setPromptText("Your name");
+        usernameField = new TextField();
+        usernameField.setPromptText("Your name");
 
-        ipField = new TextField(defaultIp);
-        ipField.setPromptText("Server IP");
+        serverIpField = new TextField(DEFAULT_IP);
+        serverIpField.setPromptText("Server IP");
 
-        portField = new TextField(String.valueOf(defaultPort));
-        portField.setPromptText("Server port");
+        serverPortField = new TextField(String.valueOf(DEFAULT_PORT));
+        serverPortField.setPromptText("Server port");
 
-        input = new TextField();
-        input.setPromptText("Message");
+        messageField = new TextField();
+        messageField.setPromptText("Message");
 
-        sendBtn = new Button("Send");
-        sendBtn.setDisable(true);
+        sendButton = new Button("Send");
+        sendButton.setDisable(true);
 
-        Button connectBtn = new Button("Connect");
-        connectBtn.setOnAction(e -> connect());
+        final Button connectButton = new Button("Connect");
+        connectButton.setOnAction(e -> onConnectClicked());
+        sendButton.setOnAction(e -> onSendClicked());
+        messageField.setOnAction(e -> onSendClicked());
 
-        sendBtn.setOnAction(e -> send());
-        input.setOnAction(e -> send());
-
-        VBox root = new VBox(
+        final VBox root = new VBox(
                 8,
-                new Label("Name:"), nameField,
-                new Label("Server IP:"), ipField,
-                new Label("Server port:"), portField,
-                connectBtn,
+                new Label("Name:"), usernameField,
+                new Label("Server IP:"), serverIpField,
+                new Label("Server port:"), serverPortField,
+                connectButton,
                 chatArea,
-                input,
-                sendBtn
+                messageField,
+                sendButton
         );
 
         stage.setTitle("Chat Client");
@@ -68,82 +77,109 @@ public class ClientFx extends Application {
         stage.show();
     }
 
-    private void connect() {
-        String name = nameField.getText();
-        if (name == null || name.isBlank()) {
+    // =======================
+    // UI event handlers
+    // =======================
+    private void onConnectClicked() {
+        final String username = usernameField.getText();
+        if (username == null || username.isBlank()) {
             alert("Enter a name first.");
             return;
         }
 
-        String ip = ipField.getText();
+        final String ip = serverIpField.getText();
         if (ip == null || ip.isBlank()) {
             alert("Enter a server IP.");
             return;
         }
 
-        int port;
+        final int port;
         try {
-            port = Integer.parseInt(portField.getText().trim());
+            port = Integer.parseInt(serverPortField.getText().trim());
             if (port < 1 || port > 65535) throw new NumberFormatException();
         } catch (Exception ex) {
             alert("Enter a valid port (1-65535).");
             return;
         }
 
-        new Thread(() -> {
-            try {
-                socket = new Socket(ip, port);
-                serverIn = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-                out = new PrintWriter(socket.getOutputStream(), true);
+        // Disable until connection succeeds (re-enabled in connectAndListen)
+        sendButton.setDisable(true);
 
-                out.println(name);
-
-                Platform.runLater(() -> {
-                    sendBtn.setDisable(false);
-                    input.requestFocus();
-                    chatArea.appendText("Connected to " + ip + ":" + port + "\n");
-                });
-
-                String line;
-                while ((line = serverIn.readLine()) != null) {
-                    final String msg = line;
-                    Platform.runLater(() -> chatArea.appendText(msg + "\n"));
-                }
-
-                Platform.runLater(() -> chatArea.appendText("Disconnected from server.\n"));
-            } catch (IOException ex) {
-                Platform.runLater(() -> alert("Connection failed: " + ex.getMessage()));
-            }
-        }, "client-receiver").start();
+        new Thread(() -> connectAndListen(username, ip, port), "client-receiver").start();
     }
 
-    private void send() {
-        if (out == null) return;
-        String msg = input.getText();
-        if (msg == null) return;
+    private void onSendClicked() {
+        if (serverWriter == null) return;
 
-        out.println(msg);
+        final String msg = messageField.getText();
+        if (msg == null || msg.isBlank()) return;
+
+        serverWriter.println(msg);
         chatArea.appendText("Me: " + msg + "\n");
-
-        input.clear();
+        messageField.clear();
 
         if (msg.trim().equalsIgnoreCase("/exit")) {
-            close();
+            closeConnectionAsync();
         }
     }
 
-    private void close() {
-        new Thread(() -> {
-            try {
-                if (socket != null) socket.close();
-            } catch (IOException ignored) {}
-            Platform.runLater(() -> sendBtn.setDisable(true));
-        }).start();
+    // =======================
+    // Networking
+    // =======================
+    private void connectAndListen(final String username, final String ip, final int port) {
+        try {
+            socket = new Socket(ip, port);
+            serverReader = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8)
+            );
+            serverWriter = new PrintWriter(socket.getOutputStream(), true);
+
+            serverWriter.println(username);
+
+            Platform.runLater(() -> {
+                sendButton.setDisable(false);
+                messageField.requestFocus();
+                chatArea.appendText("Connected to " + ip + ":" + port + "\n");
+            });
+
+            String line;
+            while ((line = serverReader.readLine()) != null) {
+                final String message = line;
+                Platform.runLater(() -> chatArea.appendText(message + "\n"));
+            }
+
+            Platform.runLater(() -> chatArea.appendText("Disconnected from server.\n"));
+        } catch (IOException ex) {
+            Platform.runLater(() -> alert("Connection failed: " + ex.getMessage()));
+        } finally {
+            cleanup();
+            Platform.runLater(() -> sendButton.setDisable(true));
+        }
     }
 
-    private void alert(String text) {
-        Alert a = new Alert(Alert.AlertType.INFORMATION, text, ButtonType.OK);
-        a.showAndWait();
+    private void closeConnectionAsync() {
+        new Thread(() -> {
+            cleanup();
+            Platform.runLater(() -> sendButton.setDisable(true));
+        }, "client-closer").start();
+    }
+
+    private void cleanup() {
+        try {
+            if (socket != null) socket.close();
+        } catch (IOException ignored) {
+        } finally {
+            socket = null;
+            serverReader = null;
+            serverWriter = null;
+        }
+    }
+
+    // =======================
+    // Dialog
+    // =======================
+    private void alert(final String text) {
+        new Alert(Alert.AlertType.INFORMATION, text, ButtonType.OK).showAndWait();
     }
 
     public static void main(String[] args) {

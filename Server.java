@@ -16,14 +16,23 @@ public class Server {
     private static final int PORT = 3000;
     private static final int HISTORY_LIMIT = 200;
 
+    private static final String HISTORY_HEADER = "---- History ----";
+    private static final String HISTORY_FOOTER = "---- End history ----";
+
+    // Central logger for server events (startup, disconnects, errors, etc.)
     private static final Logger log = new Logger();
 
+    // Database access for chat history + message persistence
     private static final Db db = new Db();
 
-    private static final List<ClientConnection> connections = new CopyOnWriteArrayList<>();
-    private static final ConcurrentHashMap<String, ClientConnection> connectionsByName =
+    // =======================
+    // Connected clients (thread-safe)
+    // =======================
+    private static final List<ClientSession> clients = new CopyOnWriteArrayList<>();
+    private static final ConcurrentHashMap<String, ClientSession> clientsByName =
             new ConcurrentHashMap<>();
 
+    // Moderation rules (banned names) loaded once at startup
     private static final Moderation moderation;
     static {
         try {
@@ -34,10 +43,10 @@ public class Server {
     }
 
     public static void main(String[] args) {
-        ServerArgs a = ServerArgs.parse(args);
-        log.setConsole(a.verbose, a.color);
+        ServerArgs serverArgs = ServerArgs.parse(args);
+        log.setConsole(serverArgs.verbose, serverArgs.color);
 
-        if (a.help) {
+        if (serverArgs.help) {
             ServerArgs.printHelp();
             return;
         }
@@ -45,10 +54,14 @@ public class Server {
         log.info("Server started");
 
         ExecutorService pool = java.util.concurrent.Executors.newCachedThreadPool();
-        try (ServerSocket server = new ServerSocket(PORT)) {
+
+        // =======================
+        // Accept loop
+        // =======================
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             while (true) {
-                Socket client = server.accept();
-                pool.submit(() -> handleClient(client));
+                Socket clientSocket = serverSocket.accept();
+                pool.submit(() -> handleClientSession(clientSocket));
             }
         } catch (IOException e) {
             log.error("Server error: " + e.getMessage());
@@ -58,78 +71,69 @@ public class Server {
         }
     }
 
-    private static void handleClient(Socket client) {
-        ClientConnection connection = null;
-        String addr = client.getInetAddress().getHostAddress() + ":" + client.getPort();
+    // =======================
+    // Client lifecycle (runs per connection in a thread)
+    // =======================
+    private static void handleClientSession(Socket clientSocket) {
+        ClientSession currentClient = null;
+        String clientId = clientSocket.getInetAddress().getHostAddress() + ":" + clientSocket.getPort();
 
-        try (Socket c = client;
-             BufferedReader in = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
-             PrintWriter out = new PrintWriter(c.getOutputStream(), true)) {
+        try (
+                Socket client = clientSocket;
+                BufferedReader in = new BufferedReader(
+                        new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8)
+                );
+                PrintWriter out = new PrintWriter(client.getOutputStream(), true)
+        ) {
+            // 1) Read username (first line from the client)
+            String rawName = in.readLine();
+            if (rawName == null) return;
 
-            String name = in.readLine();
-            if (name == null) return;
-
-            name = name.trim();
-            if (name.isEmpty()) name = "Anonymous";
-
+            // 2) Validate username + moderation rules
+            String name = normalizeName(rawName);
             if (moderation.isBannedName(name)) {
                 out.println("Name not allowed.");
                 return;
             }
 
-            ClientConnection existing = connectionsByName.putIfAbsent(name, new ClientConnection(out, name));
+            // 3) Enforce unique usernames
+            ClientSession existing = clientsByName.putIfAbsent(name, new ClientSession(out, name));
             if (existing != null) {
                 out.println("Name '" + name + "' already in use.");
                 return;
             }
 
-            connection = connectionsByName.get(name);
-            connections.add(connection);
+            // 4) Register client so broadcasts can include it
+            currentClient = clientsByName.get(name);
+            clients.add(currentClient);
 
-            log.info("Client: " + addr + " connected as: " + name);
+            log.info("Client: " + clientId + " connected as: " + name);
 
+            // 5) Welcome + initial history snapshot
             out.println("Hello " + name + ", welcome to the server.");
+            sendHistoryBlock(out);
 
-            // Send last 200 messages by default
-            out.println("---- History ----");
-            try {
-                List<Db.Msg> history = db.lastMessages(HISTORY_LIMIT); // newest->oldest unless you sort
-                for (Db.Msg m : history) {
-                    out.println(m.sender() + ": " + m.body());
-                }
-            } catch (SQLException e) {
-                out.println("Failed to load history.");
-                log.error("History load error (" + name + "): " + e.getMessage());
-            }
-            out.println("---- End history ----");
+            // 6) Notify others
+            broadcastToOthers(currentClient, name + " has joined");
 
-            broadcastExcept(connection, name + " has joined");
-
+            // 7) Main message loop
             String msg;
             while ((msg = in.readLine()) != null) {
                 if (msg.equalsIgnoreCase("/exit")) break;
 
+                // Commands
                 if (msg.equalsIgnoreCase("/users")) {
-                    out.println("Users: " + String.join(", ", connectionsByName.keySet()));
+                    out.println("Users: " + String.join(", ", clientsByName.keySet()));
                     continue;
                 }
 
                 if (msg.equalsIgnoreCase("/history")) {
-                    out.println("---- History ----");
-                    try {
-                        List<Db.Msg> history = db.lastMessages(HISTORY_LIMIT);
-                        for (Db.Msg m : history) {
-                            out.println(m.sender() + ": " + m.body());
-                        }
-                    } catch (SQLException e) {
-                        out.println("Failed to load history.");
-                        log.error("History load error (" + name + "): " + e.getMessage());
-                    }
-                    out.println("---- End history ----");
+                    sendHistoryBlock(out);
                     continue;
                 }
 
-                log.info("Client: " + addr + " (" + name + ") said: " + msg);
+                // Normal message: persist + broadcast
+                log.info("Client: " + clientId + " (" + name + ") said: " + msg);
 
                 try {
                     db.insertMessage(name, msg);
@@ -139,40 +143,67 @@ public class Server {
                     continue;
                 }
 
-                broadcastExcept(connection, name + ": " + msg);
+                broadcastToOthers(currentClient, name + ": " + msg);
             }
 
         } catch (IOException e) {
             log.error("Client handler error: " + e.getMessage());
         } finally {
-            if (connection != null) {
-                connections.remove(connection);
-                connectionsByName.remove(connection.name, connection);
+            // =======================
+            // Cleanup + broadcast leave
+            // =======================
+            if (currentClient != null) {
+                clients.remove(currentClient);
+                clientsByName.remove(currentClient.name, currentClient);
 
-                broadcastExcept(connection, connection.name + " has left");
-                log.info("Client disconnected: " + connection.name);
+                broadcastToOthers(currentClient, currentClient.name + " has left");
+                log.info("Client disconnected: " + currentClient.name);
             }
         }
     }
 
-    private static void broadcastExcept(ClientConnection sender, String msg) {
-        for (ClientConnection ch : connections) {
-            if (ch == sender) continue;
-            ch.send(msg);
+    // Convert raw username input into a usable display name
+    private static String normalizeName(String raw) {
+        String trimmed = raw.trim();
+        return trimmed.isEmpty() ? "Anonymous" : trimmed;
+    }
+
+    // Send last HISTORY_LIMIT messages to the given client
+    // Used both at connect time and when someone requests /history
+    private static void sendHistoryBlock(PrintWriter out) {
+        out.println(HISTORY_HEADER);
+        try {
+            List<Db.Msg> history = db.lastMessages(HISTORY_LIMIT);
+            for (Db.Msg m : history) {
+                out.println(m.sender() + ": " + m.body());
+            }
+        } catch (SQLException e) {
+            out.println("Failed to load history.");
+            log.error("History load error: " + e.getMessage());
+        }
+        out.println(HISTORY_FOOTER);
+    }
+
+    // Broadcast a message to everyone except the sender
+    private static void broadcastToOthers(ClientSession sender, String message) {
+        for (ClientSession client : clients) {
+            if (client == sender) continue;
+            client.send(message);
         }
     }
 
-    private static class ClientConnection {
+    // Represents one connected client and the stream to write messages to
+    private static class ClientSession {
         private final PrintWriter out;
         private final String name;
 
-        ClientConnection(PrintWriter out, String name) {
+        private ClientSession(PrintWriter out, String name) {
             this.out = out;
             this.name = name;
         }
 
-        void send(String msg) {
-            out.println(msg);
+        void send(String message) {
+            out.println(message);
         }
     }
 }
